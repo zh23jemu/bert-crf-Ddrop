@@ -1,6 +1,7 @@
 
 import os
 import random
+import argparse
 import torch
 import warnings
 import matplotlib.pyplot as plt
@@ -36,7 +37,7 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
-def train(model, train_iter, optimizer, scheduler=None, alpha=0.5):
+def train(model, train_iter, optimizer, scheduler=None, alpha=0.0):
     """
     训练函数：使用 CRF 损失 + R-Drop KL 正则提升泛化能力。
 
@@ -54,32 +55,36 @@ def train(model, train_iter, optimizer, scheduler=None, alpha=0.5):
 
         optimizer.zero_grad()
         # loss=model(x, attention_mask=attention_mask, labels=y)  # 确保loss是标量
-        # R-Drop 双forward
-        emissions1 = model.get_emissions(x,attention_mask)
-        emissions2 = model.get_emissions(x,attention_mask)
-        crf_loss1 = -model.crf(emissions1,y,mask=attention_mask.bool(),reduction='mean')
-        crf_loss2 = -model.crf(emissions2,y,mask=attention_mask.bool(),reduction='mean')
-        crf_loss = (crf_loss1 + crf_loss2) / 2  
-        # KL Loss：逐 token 计算两次 forward 的双向 KL，使两个预测分布保持一致。
-        p_loss = F.kl_div(
-            F.log_softmax(emissions1, dim=-1),
-            F.softmax(emissions2, dim=-1),
-            reduction='none'
-        )
-        q_loss = F.kl_div(
-            F.log_softmax(emissions2, dim=-1),
-            F.softmax(emissions1, dim=-1),
-            reduction='none'
-        )
-        pad_mask = attention_mask.unsqueeze(-1).bool()
-        p_loss = p_loss.masked_fill(~pad_mask, 0.)
-        q_loss = q_loss.masked_fill(~pad_mask, 0.)
-        # 原实现直接 sum 会让 KL 项随 batch 长度膨胀，容易压过 CRF 主损失。
-        # 这里按有效 token 数归一化，让 alpha 的量级稳定，通常能改善验证集 F1。
-        valid_token_count = pad_mask.sum().clamp_min(1)
-        kl_loss = (p_loss.sum() + q_loss.sum()) / (2 * valid_token_count)
-
-        loss = crf_loss + alpha * kl_loss
+        if alpha > 0:
+            # R-Drop 双forward：仅在 alpha>0 时启用，便于和普通 CRF 训练做对照。
+            emissions1 = model.get_emissions(x,attention_mask)
+            emissions2 = model.get_emissions(x,attention_mask)
+            crf_loss1 = -model.crf(emissions1,y,mask=attention_mask.bool(),reduction='mean')
+            crf_loss2 = -model.crf(emissions2,y,mask=attention_mask.bool(),reduction='mean')
+            crf_loss = (crf_loss1 + crf_loss2) / 2
+            # KL Loss：逐 token 计算两次 forward 的双向 KL，使两个预测分布保持一致。
+            p_loss = F.kl_div(
+                F.log_softmax(emissions1, dim=-1),
+                F.softmax(emissions2, dim=-1),
+                reduction='none'
+            )
+            q_loss = F.kl_div(
+                F.log_softmax(emissions2, dim=-1),
+                F.softmax(emissions1, dim=-1),
+                reduction='none'
+            )
+            pad_mask = attention_mask.unsqueeze(-1).bool()
+            p_loss = p_loss.masked_fill(~pad_mask, 0.)
+            q_loss = q_loss.masked_fill(~pad_mask, 0.)
+            # 原实现直接 sum 会让 KL 项随 batch 长度膨胀，容易压过 CRF 主损失。
+            # 这里按有效 token 数归一化，让 alpha 的量级稳定，通常能改善验证集 F1。
+            valid_token_count = pad_mask.sum().clamp_min(1)
+            kl_loss = (p_loss.sum() + q_loss.sum()) / (2 * valid_token_count)
+            loss = crf_loss + alpha * kl_loss
+        else:
+            # 强基线：关闭 R-Drop 时只使用标准 CRF 负对数似然。
+            # 当前实验显示 R-Drop 配置没有提升 F1，因此默认先回到更稳的普通训练。
+            loss = model(x, attention_mask=attention_mask, labels=y)
         loss.backward()
         # 梯度裁剪：防止梯度爆炸（CRF层易出现）
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -177,7 +182,8 @@ def main(args):
     model = BertCRF(
         output_size=args['output_size'],
         drop_prob=args['drop_prob'],
-        pretrained_path=args['pretrained_path']
+        pretrained_path=args['pretrained_path'],
+        labels=LABEL
     )
     model.to(device)
     # 打印模型参数量（粗略统计）
@@ -246,7 +252,7 @@ def main(args):
     best_model_path="model/best_model.pth"  # 最佳模型保存路径
     train_losses, eval_f1s = [], []
     early_stop_count = 0  # 早停计数器：连续5轮F1不提升则停止训练
-    early_stop_patience = 5
+    early_stop_patience = args['early_stop_patience']
 
     # 7. 开始训练
     print(f"\n===== 开始训练（共{args['epochs']}个epoch） =====")
@@ -349,20 +355,46 @@ def main(args):
     print("训练曲线已保存：image/train_curve.png")
 
 
-if __name__ == "__main__":
-    #优化训练参数，适配NER任务
-    params = {
-        'pretrained_path': "bert-base-chinese",
-        "lr": 2e-5,          # BERT层学习率：小步微调，降低灾难性遗忘风险
-        "head_lr": 2e-4,     # 分类层和CRF层学习率：新层可使用更大学习率
-        "weight_decay": 0.01,  # 仅作用于BERT中适合衰减的权重参数
-        "rdrop_alpha": 0.3,  # R-Drop KL Loss权重：配合归一化KL，默认略保守
-        "seed": 42,          # 固定随机种子，便于复现实验结果
-        "batch_size": 16,    # 从32降至16：避免GPU显存不足，提升梯度稳定性
-        "epochs": 20,        # 保留20轮，配合早停机制
-        "output_size": len(LABEL),  # 标签总数（含O标签和实体标签）
-        "drop_prob": 0.3     # 从0.5降至0.3：降低dropout比例，让模型学更稳定特征
+def parse_args():
+    """
+    解析训练参数，便于在 Slurm 上直接做小规模参数搜索。
+
+    示例：
+    .venv/bin/python train.py --rdrop-alpha 0 --drop-prob 0.2 --lr 3e-5
+    """
+    parser = argparse.ArgumentParser(description="训练 BERT-CRF 教师评语实体抽取模型")
+    parser.add_argument("--pretrained-path", default="bert-base-chinese", help="本地预训练BERT目录")
+    parser.add_argument("--lr", type=float, default=3e-5, help="BERT主体学习率")
+    parser.add_argument("--head-lr", type=float, default=2e-4, help="分类层和CRF层学习率")
+    parser.add_argument("--weight-decay", type=float, default=0.01, help="BERT权重衰减")
+    parser.add_argument("--rdrop-alpha", type=float, default=0.0, help="R-Drop KL损失权重，0表示关闭")
+    parser.add_argument("--seed", type=int, default=42, help="随机种子")
+    parser.add_argument("--batch-size", type=int, default=16, help="训练批大小")
+    parser.add_argument("--epochs", type=int, default=20, help="最大训练轮数")
+    parser.add_argument("--drop-prob", type=float, default=0.2, help="Dropout比例")
+    parser.add_argument("--early-stop-patience", type=int, default=6, help="验证F1连续不提升的早停轮数")
+    cli_args = parser.parse_args()
+
+    # 转成原 main 函数使用的字典结构，保持主体代码改动最小。
+    return {
+        'pretrained_path': cli_args.pretrained_path,
+        "lr": cli_args.lr,
+        "head_lr": cli_args.head_lr,
+        "weight_decay": cli_args.weight_decay,
+        "rdrop_alpha": cli_args.rdrop_alpha,
+        "seed": cli_args.seed,
+        "batch_size": cli_args.batch_size,
+        "epochs": cli_args.epochs,
+        "output_size": len(LABEL),
+        "drop_prob": cli_args.drop_prob,
+        "early_stop_patience": cli_args.early_stop_patience
     }
+
+
+if __name__ == "__main__":
+    # 优化训练参数，适配NER任务。
+    # 默认配置先使用 BIO 约束 + 普通 CRF 训练，目标是提高 precision 并恢复到更强基线。
+    params = parse_args()
     print("===== 训练参数配置 =====")
     for k, v in params.items():
         print(f"{k}: {v}")
