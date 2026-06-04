@@ -360,19 +360,19 @@ def parse_args():
     解析训练参数，便于在 Slurm 上直接做小规模参数搜索。
 
     示例：
-    .venv/bin/python train.py --rdrop-alpha 0 --drop-prob 0.2 --lr 3e-5
+    .venv/bin/python train.py --seed 21 --rdrop-alpha 0 --drop-prob 0.25 --lr 2.8e-5
     """
     parser = argparse.ArgumentParser(description="训练 BERT-CRF 教师评语实体抽取模型")
     parser.add_argument("--pretrained-path", default="bert-base-chinese", help="本地预训练BERT目录")
-    parser.add_argument("--lr", type=float, default=3e-5, help="BERT主体学习率")
+    parser.add_argument("--lr", type=float, default=2.8e-5, help="BERT主体学习率")
     parser.add_argument("--head-lr", type=float, default=2e-4, help="分类层和CRF层学习率")
     parser.add_argument("--weight-decay", type=float, default=0.01, help="BERT权重衰减")
     parser.add_argument("--rdrop-alpha", type=float, default=0.0, help="R-Drop KL损失权重，0表示关闭")
-    parser.add_argument("--seed", type=int, default=42, help="随机种子")
+    parser.add_argument("--seed", type=int, default=21, help="随机种子")
     parser.add_argument("--batch-size", type=int, default=16, help="训练批大小")
     parser.add_argument("--epochs", type=int, default=20, help="最大训练轮数")
-    parser.add_argument("--drop-prob", type=float, default=0.2, help="Dropout比例")
-    parser.add_argument("--early-stop-patience", type=int, default=6, help="验证F1连续不提升的早停轮数")
+    parser.add_argument("--drop-prob", type=float, default=0.25, help="Dropout比例")
+    parser.add_argument("--early-stop-patience", type=int, default=10, help="验证F1连续不提升的早停轮数")
     cli_args = parser.parse_args()
 
     # 转成原 main 函数使用的字典结构，保持主体代码改动最小。

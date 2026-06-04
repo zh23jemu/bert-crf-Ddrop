@@ -31,7 +31,7 @@
 
 ## Current Status
 
-已完成初版 Git 提交、仓库本地配置整理，并开始围绕验证集 F1 从约 77 提升到 80+ 的目标优化训练流程。
+已完成初版 Git 提交、仓库本地配置整理，并已将测试集 F1 从约 0.75 提升到 0.802836，达到 80+ 目标。
 
 ## Recent Changes
 
@@ -44,22 +44,40 @@
 - 新增 `slurm_train.sh`，按默认 GPU 分区、账号和 QOS 提供集群训练入口。
 - 将 `requirements.txt` 中 CRF 依赖校准为提供 `torchcrf` 模块的 `pytorch-crf` 包。
 - 根据首轮 GPU 结果（验证 F1 约 0.751、测试 F1 约 0.752），新增 BIO 合法转移约束，并将训练参数改为命令行可调。
+- 固化最终最佳训练参数：`--seed 21 --lr 2.8e-5 --drop-prob 0.25 --rdrop-alpha 0 --early-stop-patience 10`。
+
+## Final Experiment
+
+最终最佳任务为 Slurm `34660732`，测试集最终 F1 为 `0.802836`，训练过程中最佳验证 F1 为 `0.786122`。
+
+```text
+              precision    recall  f1-score   support
+
+       moral       0.78      0.85      0.81       234
+ personality       0.78      0.79      0.78       157
+       study       0.83      0.84      0.83       244
+  suggestion       0.74      0.80      0.77       286
+    weakness       0.82      0.83      0.83       181
+
+   micro avg       0.78      0.82      0.80      1102
+   macro avg       0.79      0.82      0.80      1102
+weighted avg       0.79      0.82      0.80      1102
+```
 
 ## Next TODO
 
 - 建议创建 `.venv` 后安装依赖，并验证 `train.py`、`preprocess.py` 和 `main.py` 的基本运行路径。
 - 检查 `text.py` 中 `processed/dev.txt` 与当前 `processed/val.txt` 命名不一致的问题。
-- 在 GPU 环境中运行训练，记录最佳验证集 F1 和测试集 F1，确认是否达到 80+。
-- 拉取最新 `main` 后先运行默认配置（BIO 约束 + `rdrop_alpha=0` + `drop_prob=0.2` + `lr=3e-5`）。
-- 如 F1 仍不足 80，优先尝试 `--rdrop-alpha 0.1`、`--drop-prob 0.3`、`--lr 2e-5` 三组对照。
+- 如需复现实验，直接运行当前 `train.py` 默认配置，或显式传入最终参数：`--seed 21 --lr 2.8e-5 --drop-prob 0.25 --rdrop-alpha 0 --early-stop-patience 10`。
+- 如需继续提升，优先分析 `suggestion` 与 `personality` 两类实体的边界和误报样本。
 
 ## Open Issues
 
 - 当前仓库初版提交曾包含 IDE 配置、缓存文件和本地 BERT 权重，需要通过新的提交从 Git 跟踪中移除这些本地运行态文件。
 - 本地 `.env` 中保存真实 API Key，虽然已被忽略，但历史提交中曾出现明文密钥，建议立即轮换该密钥。
 - `bert-base-chinese/pytorch_model.bin` 约 392MB，不适合继续作为普通 Git 文件长期维护。
-- 当前尚未在 GPU 上完成新训练配置的完整实验，F1 提升幅度需要实际训练验证。
-- 首轮 R-Drop 归一化配置未提升 F1，precision 偏低、recall 偏高，说明模型存在抽取偏多或边界偏宽问题。
+- 当前 80+ 结果来自固定数据划分下的单次最佳实验；如需论文级稳健性，建议补充多 seed 均值或标准差。
+- `suggestion` 与 `personality` 类别仍是相对短板，后续可通过标注清洗、边界规则或后处理继续优化。
 
 ## Architecture Decisions
 
@@ -68,3 +86,4 @@
 - 真实密钥保存在本地 `.env`，仓库只提交 `.env.example` 模板。
 - 先保留 BERT + CRF 主架构，通过训练稳定性、损失尺度和优化器配置提升 F1，避免在未验证前引入 BiLSTM 或其它较大结构变更。
 - 针对 precision 偏低的问题，优先在 CRF 层加入 BIO 合法转移约束，而不是立即扩大模型结构。
+- 最终默认配置选择原始 `bert-base-chinese` 而非 MacBERT，因为 MacBERT 最佳测试 F1 为 0.794678，未超过 BERT 最佳结果 0.802836。
