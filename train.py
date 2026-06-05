@@ -267,7 +267,15 @@ def main(args):
 
     # 6. 训练初始化【核心修改4】处理best_model为None的情况，添加早停机制（可选）
     best_f1 = 0.0
-    best_model_path="model/best_model.pth"  # 最佳模型保存路径
+    # 并行提交多个 Slurm 调参任务时，不能共用同一个 checkpoint 文件。
+    # 否则一个任务正在写入、另一个任务正在读取时，容易出现 checkpoint 损坏。
+    # 默认在 Slurm 环境中使用 JobID 生成独立文件名；本地单跑仍保持原路径。
+    slurm_job_id = os.environ.get("SLURM_JOB_ID")
+    best_model_path = args.get('model_save_path')
+    if best_model_path is None:
+        best_model_path = f"model/best_model_{slurm_job_id}.pth" if slurm_job_id else "model/best_model.pth"
+    os.makedirs(os.path.dirname(best_model_path) or ".", exist_ok=True)
+    print(f"最佳模型保存路径: {best_model_path}")
     train_losses, eval_f1s = [], []
     early_stop_count = 0  # 早停计数器：连续5轮F1不提升则停止训练
     early_stop_patience = args['early_stop_patience']
@@ -396,6 +404,8 @@ def parse_args():
                         help="启用教师评语语篇功能特征，用于CDFA-NER创新模型和消融实验")
     parser.add_argument("--discourse-emb-size", type=int, default=16,
                         help="语篇功能标签嵌入维度，仅在--use-discourse-feature启用时生效")
+    parser.add_argument("--model-save-path", default=None,
+                        help="最佳模型保存路径；默认在Slurm环境中按JobID生成，避免并行任务互相覆盖")
     cli_args = parser.parse_args()
 
     # 转成原 main 函数使用的字典结构，保持主体代码改动最小。
@@ -412,7 +422,8 @@ def parse_args():
         "drop_prob": cli_args.drop_prob,
         "early_stop_patience": cli_args.early_stop_patience,
         "use_discourse_feature": cli_args.use_discourse_feature,
-        "discourse_emb_size": cli_args.discourse_emb_size
+        "discourse_emb_size": cli_args.discourse_emb_size,
+        "model_save_path": cli_args.model_save_path
     }
 
 
