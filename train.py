@@ -12,7 +12,7 @@ from seqeval.metrics import classification_report, f1_score
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import get_linear_schedule_with_warmup
-from dataset import LABEL, idx2tag, padding, Comments
+from dataset import LABEL, DISCOURSE_LABEL, idx2tag, padding, Comments
 import torch.nn.functional as F
 
 warnings.filterwarnings('ignore')
@@ -50,15 +50,18 @@ def train(model, train_iter, optimizer, scheduler=None, alpha=0.0):
     train_l_sum, c = 0., 0
     # 用tqdm包装训练迭代器，显示训练进度
     train_bar = tqdm(train_iter, desc="Training")
-    for i, (x, attention_mask, y) in enumerate(train_bar):
-        x, attention_mask, y = x.to(device), attention_mask.to(device), y.to(device)
+    for i, (x, discourse_ids, attention_mask, y) in enumerate(train_bar):
+        x = x.to(device)
+        discourse_ids = discourse_ids.to(device)
+        attention_mask = attention_mask.to(device)
+        y = y.to(device)
 
         optimizer.zero_grad()
         # loss=model(x, attention_mask=attention_mask, labels=y)  # 确保loss是标量
         if alpha > 0:
             # R-Drop 双forward：仅在 alpha>0 时启用，便于和普通 CRF 训练做对照。
-            emissions1 = model.get_emissions(x,attention_mask)
-            emissions2 = model.get_emissions(x,attention_mask)
+            emissions1 = model.get_emissions(x, attention_mask, discourse_ids=discourse_ids)
+            emissions2 = model.get_emissions(x, attention_mask, discourse_ids=discourse_ids)
             crf_loss1 = -model.crf(emissions1,y,mask=attention_mask.bool(),reduction='mean')
             crf_loss2 = -model.crf(emissions2,y,mask=attention_mask.bool(),reduction='mean')
             crf_loss = (crf_loss1 + crf_loss2) / 2
@@ -84,7 +87,7 @@ def train(model, train_iter, optimizer, scheduler=None, alpha=0.0):
         else:
             # 强基线：关闭 R-Drop 时只使用标准 CRF 负对数似然。
             # 当前实验显示 R-Drop 配置没有提升 F1，因此默认先回到更稳的普通训练。
-            loss = model(x, attention_mask=attention_mask, labels=y)
+            loss = model(x, attention_mask=attention_mask, labels=y, discourse_ids=discourse_ids)
         loss.backward()
         # 梯度裁剪：防止梯度爆炸（CRF层易出现）
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -108,13 +111,16 @@ def evaluate(model, eval_iter, report=False, epoch=0):
     total_valid = 0  # 统计有效token数量
     with torch.no_grad():
         eval_bar = tqdm(eval_iter, desc=f"Evaluating Epoch {epoch}")
-        for x, attention_mask, y in eval_bar:
-            x, attention_mask, y = x.to(device), attention_mask.to(device), y.to(device)
+        for x, discourse_ids, attention_mask, y in eval_bar:
+            x = x.to(device)
+            discourse_ids = discourse_ids.to(device)
+            attention_mask = attention_mask.to(device)
+            y = y.to(device)
 
             # 【核心修改1】适配BertBilstmCRF的CRF解码输出
             # 确保模型返回：(loss, 预测标签id序列) 或 仅预测标签id序列（无labels时）
             # 兼容多数CRF实现的输出逻辑：无labels时返回viterbi解码后的标签序列
-            predictions = model(x, attention_mask=attention_mask)
+            predictions = model(x, attention_mask=attention_mask, discourse_ids=discourse_ids)
             # 额外处理：若模型返回tuple，取第二个元素为预测序列（适配部分CRF实现）
             if isinstance(predictions, tuple):
                 predictions = predictions[1]
@@ -183,7 +189,10 @@ def main(args):
         output_size=args['output_size'],
         drop_prob=args['drop_prob'],
         pretrained_path=args['pretrained_path'],
-        labels=LABEL
+        labels=LABEL,
+        use_discourse_feature=args['use_discourse_feature'],
+        discourse_vocab_size=len(DISCOURSE_LABEL),
+        discourse_emb_size=args['discourse_emb_size']
     )
     model.to(device)
     # 打印模型参数量（粗略统计）
@@ -234,6 +243,15 @@ def main(args):
         }
 
     ], betas=(0.9, 0.999))
+
+    # 启用语篇功能特征时，额外训练低维discourse embedding。
+    # 关闭该功能时discourse_embedding为None，不影响基线参数组和复现实验。
+    if model.discourse_embedding is not None:
+        optimizer.add_param_group({
+            'params': model.discourse_embedding.parameters(),
+            'lr': args['head_lr'],
+            'weight_decay': 0.0
+        })
 
     # 5. 学习率调度器
     total_steps = len(train_iter) * args['epochs']
@@ -361,6 +379,7 @@ def parse_args():
 
     示例：
     .venv/bin/python train.py --seed 21 --rdrop-alpha 0 --drop-prob 0.25 --lr 2.8e-5
+    .venv/bin/python train.py --use-discourse-feature
     """
     parser = argparse.ArgumentParser(description="训练 BERT-CRF 教师评语实体抽取模型")
     parser.add_argument("--pretrained-path", default="bert-base-chinese", help="本地预训练BERT目录")
@@ -373,6 +392,10 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=20, help="最大训练轮数")
     parser.add_argument("--drop-prob", type=float, default=0.25, help="Dropout比例")
     parser.add_argument("--early-stop-patience", type=int, default=10, help="验证F1连续不提升的早停轮数")
+    parser.add_argument("--use-discourse-feature", action="store_true",
+                        help="启用教师评语语篇功能特征，用于CDFA-NER创新模型和消融实验")
+    parser.add_argument("--discourse-emb-size", type=int, default=16,
+                        help="语篇功能标签嵌入维度，仅在--use-discourse-feature启用时生效")
     cli_args = parser.parse_args()
 
     # 转成原 main 函数使用的字典结构，保持主体代码改动最小。
@@ -387,7 +410,9 @@ def parse_args():
         "epochs": cli_args.epochs,
         "output_size": len(LABEL),
         "drop_prob": cli_args.drop_prob,
-        "early_stop_patience": cli_args.early_stop_patience
+        "early_stop_patience": cli_args.early_stop_patience,
+        "use_discourse_feature": cli_args.use_discourse_feature,
+        "discourse_emb_size": cli_args.discourse_emb_size
     }
 
 

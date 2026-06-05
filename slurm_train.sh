@@ -18,6 +18,8 @@
 # 3. 脚本默认使用项目本地 .venv，提交前请先在登录节点或交互节点完成依赖安装。
 # 4. 可通过 TRAIN_ARGS 透传训练参数，例如：
 #    sbatch --export=ALL,TRAIN_ARGS="--rdrop-alpha 0 --drop-prob 0.2 --lr 3e-5" slurm_train.sh
+# 5. 运行CDFA-NER创新模型时，可执行：
+#    sbatch --qos=shortjobs --time=01:00:00 --export=ALL,TRAIN_ARGS="--use-discourse-feature" slurm_train.sh
 
 set -euo pipefail
 

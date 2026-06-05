@@ -31,7 +31,7 @@
 
 ## Current Status
 
-已完成初版 Git 提交、仓库本地配置整理，并已将测试集 F1 从约 0.75 提升到 0.802836，达到 80+ 目标。
+已完成初版 Git 提交、仓库本地配置整理，并已将测试集 F1 从约 0.75 提升到 0.802836，达到 80+ 目标；当前新增评语语篇功能感知增强（CDFA-NER）创新模块，准备后续对比实验。
 
 ## Recent Changes
 
@@ -45,6 +45,7 @@
 - 将 `requirements.txt` 中 CRF 依赖校准为提供 `torchcrf` 模块的 `pytorch-crf` 包。
 - 根据首轮 GPU 结果（验证 F1 约 0.751、测试 F1 约 0.752），新增 BIO 合法转移约束，并将训练参数改为命令行可调。
 - 固化最终最佳训练参数：`--seed 21 --lr 2.8e-5 --drop-prob 0.25 --rdrop-alpha 0 --early-stop-patience 10`。
+- 新增 CDFA-NER 创新实现：在 `dataset.py` 中基于教师评语触发词和分句结构自动生成语篇功能标签，在 `model/model.py` 中可选拼接语篇功能嵌入，在 `train.py` 中通过 `--use-discourse-feature` 开关启用。
 
 ## Final Experiment
 
@@ -70,6 +71,8 @@ weighted avg       0.79      0.82      0.80      1102
 - 检查 `text.py` 中 `processed/dev.txt` 与当前 `processed/val.txt` 命名不一致的问题。
 - 如需复现实验，直接运行当前 `train.py` 默认配置，或显式传入最终参数：`--seed 21 --lr 2.8e-5 --drop-prob 0.25 --rdrop-alpha 0 --early-stop-patience 10`。
 - 如需继续提升，优先分析 `suggestion` 与 `personality` 两类实体的边界和误报样本。
+- 运行 CDFA-NER 创新实验：`sbatch --qos=shortjobs --time=01:00:00 --export=ALL,TRAIN_ARGS="--use-discourse-feature" slurm_train.sh`，并与默认基线结果 `0.802836` 对比。
+- 做消融实验时保留同一随机种子和默认超参，只切换 `--use-discourse-feature`，确保差异来自语篇功能增强。
 
 ## Open Issues
 
@@ -78,6 +81,7 @@ weighted avg       0.79      0.82      0.80      1102
 - `bert-base-chinese/pytorch_model.bin` 约 392MB，不适合继续作为普通 Git 文件长期维护。
 - 当前 80+ 结果来自固定数据划分下的单次最佳实验；如需论文级稳健性，建议补充多 seed 均值或标准差。
 - `suggestion` 与 `personality` 类别仍是相对短板，后续可通过标注清洗、边界规则或后处理继续优化。
+- CDFA-NER 的语篇功能标签完全由规则生成，不依赖 gold BIO 标签；如果整体 F1 不超过基线，仍可重点观察 `weakness`、`suggestion` 类别和转折/建议分句案例是否有可解释提升。
 
 ## Architecture Decisions
 
@@ -87,3 +91,4 @@ weighted avg       0.79      0.82      0.80      1102
 - 先保留 BERT + CRF 主架构，通过训练稳定性、损失尺度和优化器配置提升 F1，避免在未验证前引入 BiLSTM 或其它较大结构变更。
 - 针对 precision 偏低的问题，优先在 CRF 层加入 BIO 合法转移约束，而不是立即扩大模型结构。
 - 最终默认配置选择原始 `bert-base-chinese` 而非 MacBERT，因为 MacBERT 最佳测试 F1 为 0.794678，未超过 BERT 最佳结果 0.802836。
+- CDFA-NER 的创新点定位为“教师评语语篇结构与功能触发词感知”，默认关闭以保证基线可复现；启用后将 `neutral/positive_eval/weakness_context/suggestion_context/transition_context` 低维嵌入与 BERT 表示拼接，而不是引入通用注意力模块。

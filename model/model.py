@@ -29,11 +29,15 @@ class BertCRF(nn.Module):
                  output_size,
                  drop_prob=0.3,
                  pretrained_path="albert-tiny-chinese",
-                 labels=None):
+                 labels=None,
+                 use_discourse_feature=False,
+                 discourse_vocab_size=5,
+                 discourse_emb_size=16):
         super(BertCRF, self).__init__()
 
         self.output_size = output_size
         self.labels = labels
+        self.use_discourse_feature = use_discourse_feature
 
         # 加载预训练BERT
         self.bert = AutoModel.from_pretrained(pretrained_path)
@@ -41,11 +45,22 @@ class BertCRF(nn.Module):
         # 获取BERT隐藏层维度
         hidden_size = self.bert.config.hidden_size
 
+        if self.use_discourse_feature:
+            # 教师评语语篇功能嵌入：
+            # 将“正向评价/不足语境/建议语境/转折词”等结构化提示映射为低维向量，
+            # 再与BERT的上下文表示拼接，突出教师评语“先扬后抑再建议”的领域结构。
+            self.discourse_embedding = nn.Embedding(discourse_vocab_size, discourse_emb_size)
+            classifier_input_size = hidden_size + discourse_emb_size
+        else:
+            # 关闭创新特征时保持原始BERT-CRF结构，便于做严格消融对比。
+            self.discourse_embedding = None
+            classifier_input_size = hidden_size
+
         # Dropout
         self.dropout = nn.Dropout(drop_prob)
 
         # 分类层（直接接BERT输出）
-        self.fc = nn.Linear(hidden_size, output_size)
+        self.fc = nn.Linear(classifier_input_size, output_size)
 
         # CRF层
         self.crf = CRF(output_size, batch_first=True)
@@ -68,24 +83,31 @@ class BertCRF(nn.Module):
                         self.crf.transitions[from_idx, to_idx] = -10000.0
 
 
-    def get_emissions(self, x, attention_mask):
+    def get_emissions(self, x, attention_mask, discourse_ids=None):
         outputs = self.bert(
             input_ids=x,
             attention_mask=attention_mask
         )
         sequence_output = outputs.last_hidden_state
+
+        if self.use_discourse_feature:
+            if discourse_ids is None:
+                raise ValueError("启用语篇功能特征时必须传入 discourse_ids")
+            discourse_output = self.discourse_embedding(discourse_ids)
+            sequence_output = torch.cat([sequence_output, discourse_output], dim=-1)
+
         sequence_output = self.dropout(sequence_output)
         emissions = self.fc(sequence_output)
         return emissions
 
-    def forward(self, x, attention_mask=None, labels=None):
+    def forward(self, x, attention_mask=None, labels=None, discourse_ids=None):
 
         # attention_mask为空时自动生成
         if attention_mask is None:
             attention_mask = (x != 0).long()
 
         
-        emissions = self.get_emissions(x,attention_mask)
+        emissions = self.get_emissions(x, attention_mask, discourse_ids=discourse_ids)
 
         # ======================
         # 训练
