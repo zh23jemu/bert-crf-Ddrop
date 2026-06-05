@@ -31,7 +31,7 @@
 
 ## Current Status
 
-已完成初版 Git 提交、仓库本地配置整理，并已将测试集 F1 从约 0.75 提升到 0.802836，达到 80+ 目标；当前新增评语语篇功能感知增强（CDFA-NER）创新模块，准备后续对比实验。
+已完成初版 Git 提交、仓库本地配置整理，并已将测试集 F1 从约 0.75 提升到 0.802836，达到 80+ 目标；当前新增评语语篇功能感知增强（CDFA-NER）创新模块，准备后续对比实验；该模块已由直接拼接改为更稳的残差式语篇提示。
 已修复 Slurm 并行调参时多个任务共用 `model/best_model.pth` 导致 checkpoint 被互相覆盖或读坏的问题。
 
 ## Recent Changes
@@ -47,7 +47,7 @@
 - 根据首轮 GPU 结果（验证 F1 约 0.751、测试 F1 约 0.752），新增 BIO 合法转移约束，并将训练参数改为命令行可调。
 - 固化最终最佳训练参数：`--seed 21 --lr 2.8e-5 --drop-prob 0.25 --rdrop-alpha 0 --early-stop-patience 10`。
 - 将最佳模型保存路径改为 Slurm 环境下默认按 `SLURM_JOB_ID` 生成，例如 `model/best_model_34756097.pth`，避免并行实验互相覆盖 checkpoint；同时新增 `--model-save-path` 供手动指定。
-- 新增 CDFA-NER 创新实现：在 `dataset.py` 中基于教师评语触发词和分句结构自动生成语篇功能标签，在 `model/model.py` 中可选拼接语篇功能嵌入，在 `train.py` 中通过 `--use-discourse-feature` 开关启用。
+- 新增 CDFA-NER 创新实现：在 `dataset.py` 中基于教师评语触发词和分句结构自动生成语篇功能标签，在 `model/model.py` 中通过残差 logit 提示叠加语篇功能修正，在 `train.py` 中通过 `--use-discourse-feature` 开关启用。
 
 ## Final Experiment
 
@@ -96,4 +96,4 @@ weighted avg       0.79      0.82      0.80      1102
 - 针对 precision 偏低的问题，优先在 CRF 层加入 BIO 合法转移约束，而不是立即扩大模型结构。
 - 最终默认配置选择原始 `bert-base-chinese` 而非 MacBERT，因为 MacBERT 最佳测试 F1 为 0.794678，未超过 BERT 最佳结果 0.802836。
 - Slurm 实验的最佳模型文件默认按 JobID 隔离，保证并行调参时训练、保存和测试阶段互不干扰。
-- CDFA-NER 的创新点定位为“教师评语语篇结构与功能触发词感知”，默认关闭以保证基线可复现；启用后将 `neutral/positive_eval/weakness_context/suggestion_context/transition_context` 低维嵌入与 BERT 表示拼接，而不是引入通用注意力模块。
+- CDFA-NER 的创新点定位为“教师评语语篇结构与功能触发词感知”，默认关闭以保证基线可复现；启用后将 `neutral/positive_eval/weakness_context/suggestion_context/transition_context` 低维嵌入映射为残差 logit 修正，叠加到 BERT-CRF 主输出上，而不是引入通用注意力模块。

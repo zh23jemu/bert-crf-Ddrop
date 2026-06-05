@@ -47,20 +47,25 @@ class BertCRF(nn.Module):
 
         if self.use_discourse_feature:
             # 教师评语语篇功能嵌入：
-            # 将“正向评价/不足语境/建议语境/转折词”等结构化提示映射为低维向量，
-            # 再与BERT的上下文表示拼接，突出教师评语“先扬后抑再建议”的领域结构。
+            # 将“正向评价/不足语境/建议语境/转折词”等结构化提示映射为低维向量。
+            # 这里不再把它直接拼接到BERT表示后重训分类头，而是作为残差logit提示：
+            # 主路径保持原始BERT-CRF，语篇路径只学习一个小的类别偏置修正。
+            # 这样创新模型的初始行为等价于基线，避免规则特征噪声一开始就破坏已验证的强基线。
             self.discourse_embedding = nn.Embedding(discourse_vocab_size, discourse_emb_size)
-            classifier_input_size = hidden_size + discourse_emb_size
+            self.discourse_projection = nn.Linear(discourse_emb_size, output_size)
+            nn.init.zeros_(self.discourse_projection.weight)
+            nn.init.zeros_(self.discourse_projection.bias)
         else:
             # 关闭创新特征时保持原始BERT-CRF结构，便于做严格消融对比。
             self.discourse_embedding = None
-            classifier_input_size = hidden_size
+            self.discourse_projection = None
 
         # Dropout
         self.dropout = nn.Dropout(drop_prob)
 
-        # 分类层（直接接BERT输出）
-        self.fc = nn.Linear(classifier_input_size, output_size)
+        # 分类层（直接接BERT输出）。启用语篇增强时仍保持和基线相同的输入维度，
+        # 保证主分类头不因创新特征改变结构。
+        self.fc = nn.Linear(hidden_size, output_size)
 
         # CRF层
         self.crf = CRF(output_size, batch_first=True)
@@ -94,10 +99,14 @@ class BertCRF(nn.Module):
             if discourse_ids is None:
                 raise ValueError("启用语篇功能特征时必须传入 discourse_ids")
             discourse_output = self.discourse_embedding(discourse_ids)
-            sequence_output = torch.cat([sequence_output, discourse_output], dim=-1)
 
         sequence_output = self.dropout(sequence_output)
         emissions = self.fc(sequence_output)
+        if self.use_discourse_feature:
+            # 残差式语篇提示：在BERT-CRF主输出上叠加一项由语篇功能标签学习到的logit修正。
+            # projection初始为0，因此模型刚开始训练时与基线一致；如果语篇信号有帮助，
+            # 训练会逐步学习在“不足/建议”等区域提高相应类别的发射分数。
+            emissions = emissions + self.discourse_projection(self.dropout(discourse_output))
         return emissions
 
     def forward(self, x, attention_mask=None, labels=None, discourse_ids=None):

@@ -244,11 +244,16 @@ def main(args):
 
     ], betas=(0.9, 0.999))
 
-    # 启用语篇功能特征时，额外训练低维discourse embedding。
-    # 关闭该功能时discourse_embedding为None，不影响基线参数组和复现实验。
+    # 启用语篇功能特征时，额外训练低维discourse embedding 和残差logit投影层。
+    # 关闭该功能时相关模块为None，不影响基线参数组和复现实验。
     if model.discourse_embedding is not None:
         optimizer.add_param_group({
             'params': model.discourse_embedding.parameters(),
+            'lr': args['head_lr'],
+            'weight_decay': 0.0
+        })
+        optimizer.add_param_group({
+            'params': model.discourse_projection.parameters(),
             'lr': args['head_lr'],
             'weight_decay': 0.0
         })
