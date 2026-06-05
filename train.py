@@ -195,6 +195,31 @@ def main(args):
         discourse_emb_size=args['discourse_emb_size']
     )
     model.to(device)
+    if args.get('init_from'):
+        # 基线保持式微调：
+        # 先加载已经达到80+的强基线权重，再训练新增的语篇残差层。
+        # 当当前模型启用CDFA时，checkpoint里没有discourse相关参数属于正常情况，
+        # 因此使用strict=False，只要求BERT/FC/CRF主体能正确对齐加载。
+        checkpoint = torch.load(args['init_from'], map_location=device)
+        missing_keys, unexpected_keys = model.load_state_dict(checkpoint, strict=False)
+        print(f"已加载初始权重: {args['init_from']}")
+        if missing_keys:
+            print(f"未从checkpoint加载的参数: {missing_keys}")
+        if unexpected_keys:
+            print(f"checkpoint中未使用的参数: {unexpected_keys}")
+
+    if args.get('freeze_base_model'):
+        if not args['use_discourse_feature']:
+            raise ValueError("--freeze-base-model 需要和 --use-discourse-feature 一起使用，否则没有可训练的创新模块")
+        # 冻结原始BERT-CRF主路径，只让语篇功能残差层学习小幅修正。
+        # 这样可以最大限度保留已验证的强基线，降低创新特征把整体F1拉低的风险。
+        for param in model.bert.parameters():
+            param.requires_grad = False
+        for param in model.fc.parameters():
+            param.requires_grad = False
+        for param in model.crf.parameters():
+            param.requires_grad = False
+        print("已冻结BERT/FC/CRF主路径，仅训练语篇功能残差模块")
     # 打印模型参数量（粗略统计）
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -411,6 +436,10 @@ def parse_args():
                         help="语篇功能标签嵌入维度，仅在--use-discourse-feature启用时生效")
     parser.add_argument("--model-save-path", default=None,
                         help="最佳模型保存路径；默认在Slurm环境中按JobID生成，避免并行任务互相覆盖")
+    parser.add_argument("--init-from", default=None,
+                        help="从已有checkpoint初始化模型，常用于在最佳基线基础上训练创新模块")
+    parser.add_argument("--freeze-base-model", action="store_true",
+                        help="冻结BERT/FC/CRF主路径，仅训练语篇残差模块，需配合--use-discourse-feature")
     cli_args = parser.parse_args()
 
     # 转成原 main 函数使用的字典结构，保持主体代码改动最小。
@@ -428,7 +457,9 @@ def parse_args():
         "early_stop_patience": cli_args.early_stop_patience,
         "use_discourse_feature": cli_args.use_discourse_feature,
         "discourse_emb_size": cli_args.discourse_emb_size,
-        "model_save_path": cli_args.model_save_path
+        "model_save_path": cli_args.model_save_path,
+        "init_from": cli_args.init_from,
+        "freeze_base_model": cli_args.freeze_base_model
     }
 
 

@@ -33,6 +33,7 @@
 
 已完成初版 Git 提交、仓库本地配置整理，并已将测试集 F1 从约 0.75 提升到 0.802836，达到 80+ 目标；当前新增评语语篇功能感知增强（CDFA-NER）创新模块，准备后续对比实验；该模块已由直接拼接改为更稳的残差式语篇提示。
 已修复 Slurm 并行调参时多个任务共用 `model/best_model.pth` 导致 checkpoint 被互相覆盖或读坏的问题。
+为满足创新模型需超过当前最佳基线的目标，已新增“基线保持式微调”路径：先加载最佳基线 checkpoint，再冻结 BERT/FC/CRF 主路径，只训练 CDFA 语篇残差模块。
 
 ## Recent Changes
 
@@ -48,6 +49,7 @@
 - 固化最终最佳训练参数：`--seed 21 --lr 2.8e-5 --drop-prob 0.25 --rdrop-alpha 0 --early-stop-patience 10`。
 - 将最佳模型保存路径改为 Slurm 环境下默认按 `SLURM_JOB_ID` 生成，例如 `model/best_model_34756097.pth`，避免并行实验互相覆盖 checkpoint；同时新增 `--model-save-path` 供手动指定。
 - 新增 CDFA-NER 创新实现：在 `dataset.py` 中基于教师评语触发词和分句结构自动生成语篇功能标签，在 `model/model.py` 中通过残差 logit 提示叠加语篇功能修正，在 `train.py` 中通过 `--use-discourse-feature` 开关启用。
+- 新增 `--init-from` 与 `--freeze-base-model`：支持从最佳基线权重初始化，并冻结原始 BERT-CRF 主路径，仅训练语篇功能残差层。
 
 ## Final Experiment
 
@@ -75,6 +77,7 @@ weighted avg       0.79      0.82      0.80      1102
 - 如需继续提升，优先分析 `suggestion` 与 `personality` 两类实体的边界和误报样本。
 - 并行跑多个 Slurm 实验时，继续优先使用当前按 JobID 隔离的 checkpoint 路径；如果手动指定 `--model-save-path`，不同任务必须使用不同文件。
 - 运行 CDFA-NER 创新实验：`sbatch --qos=shortjobs --time=01:00:00 --export=ALL,TRAIN_ARGS="--use-discourse-feature" slurm_train.sh`，并与默认基线结果 `0.802836` 对比。
+- 如果需要创新模型超过最佳基线，优先先重新跑默认基线生成独立 checkpoint，再运行 `--use-discourse-feature --init-from model/best_model_JOBID.pth --freeze-base-model` 做基线保持式微调。
 - 做消融实验时保留同一随机种子和默认超参，只切换 `--use-discourse-feature`，确保差异来自语篇功能增强。
 
 ## Open Issues
@@ -86,6 +89,7 @@ weighted avg       0.79      0.82      0.80      1102
 - `suggestion` 与 `personality` 类别仍是相对短板，后续可通过标注清洗、边界规则或后处理继续优化。
 - CDFA-NER 的语篇功能标签完全由规则生成，不依赖 gold BIO 标签；如果整体 F1 不超过基线，仍可重点观察 `weakness`、`suggestion` 类别和转折/建议分句案例是否有可解释提升。
 - 任务 `34756097` 与 `34756100` 因旧版代码共用 `model/best_model.pth` 出现 checkpoint corrupted，需要用新代码重新提交对应实验。
+- 旧的 `model/best_model.pth` 可能已被后续实验覆盖，不应直接当作 0.802836 最佳基线权重；如需 `--init-from`，建议重新跑默认基线并使用对应 JobID checkpoint。
 
 ## Architecture Decisions
 
@@ -97,3 +101,4 @@ weighted avg       0.79      0.82      0.80      1102
 - 最终默认配置选择原始 `bert-base-chinese` 而非 MacBERT，因为 MacBERT 最佳测试 F1 为 0.794678，未超过 BERT 最佳结果 0.802836。
 - Slurm 实验的最佳模型文件默认按 JobID 隔离，保证并行调参时训练、保存和测试阶段互不干扰。
 - CDFA-NER 的创新点定位为“教师评语语篇结构与功能触发词感知”，默认关闭以保证基线可复现；启用后将 `neutral/positive_eval/weakness_context/suggestion_context/transition_context` 低维嵌入映射为残差 logit 修正，叠加到 BERT-CRF 主输出上，而不是引入通用注意力模块。
+- 基线保持式 CDFA 微调采用“强基线主路径冻结 + 语篇残差层单独学习”的设计，目标是在不破坏 80+ 基线的前提下，让教师评语语篇结构信号学习小幅输出修正。
