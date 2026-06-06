@@ -34,6 +34,7 @@
 已完成初版 Git 提交、仓库本地配置整理，并已将测试集 F1 从约 0.75 提升到 0.802836，达到 80+ 目标；当前新增评语语篇功能感知增强（CDFA-NER）创新模块，准备后续对比实验；该模块已由直接拼接改为更稳的残差式语篇提示。
 已修复 Slurm 并行调参时多个任务共用 `model/best_model.pth` 导致 checkpoint 被互相覆盖或读坏的问题。
 为满足创新模型需超过当前最佳基线的目标，已新增“基线保持式微调”路径：先加载最佳基线 checkpoint，再冻结 BERT/FC/CRF 主路径，只训练 CDFA 语篇残差模块。
+已新增 `PROJECT_STATUS.md`，用于换电脑继续开发时快速了解项目现状、历史最佳结果、创新实验进度和下一步计划。
 
 ## Recent Changes
 
@@ -50,6 +51,7 @@
 - 将最佳模型保存路径改为 Slurm 环境下默认按 `SLURM_JOB_ID` 生成，例如 `model/best_model_34756097.pth`，避免并行实验互相覆盖 checkpoint；同时新增 `--model-save-path` 供手动指定。
 - 新增 CDFA-NER 创新实现：在 `dataset.py` 中基于教师评语触发词和分句结构自动生成语篇功能标签，在 `model/model.py` 中通过残差 logit 提示叠加语篇功能修正，在 `train.py` 中通过 `--use-discourse-feature` 开关启用。
 - 新增 `--init-from` 与 `--freeze-base-model`：支持从最佳基线权重初始化，并冻结原始 BERT-CRF 主路径，仅训练语篇功能残差层。
+- 新增 `PROJECT_STATUS.md`，集中记录当前最好 F1、已完成改动、CDFA 实验结果、CUDA 新电脑环境准备和后续实验路线。
 
 ## Final Experiment
 
@@ -78,6 +80,7 @@ weighted avg       0.79      0.82      0.80      1102
 - 并行跑多个 Slurm 实验时，继续优先使用当前按 JobID 隔离的 checkpoint 路径；如果手动指定 `--model-save-path`，不同任务必须使用不同文件。
 - 运行 CDFA-NER 创新实验：`sbatch --qos=shortjobs --time=01:00:00 --export=ALL,TRAIN_ARGS="--use-discourse-feature" slurm_train.sh`，并与默认基线结果 `0.802836` 对比。
 - 如果需要创新模型超过最佳基线，优先先重新跑默认基线生成独立 checkpoint，再运行 `--use-discourse-feature --init-from model/best_model_JOBID.pth --freeze-base-model` 做基线保持式微调。
+- 换到 CUDA 新电脑后，先按 `PROJECT_STATUS.md` 准备 `.env`、BERT 权重和 `.venv`，再优先复现 80+ 强基线 checkpoint。
 - 做消融实验时保留同一随机种子和默认超参，只切换 `--use-discourse-feature`，确保差异来自语篇功能增强。
 
 ## Open Issues
